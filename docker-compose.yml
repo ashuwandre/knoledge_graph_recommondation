@@ -1,0 +1,22 @@
+# Starts one Neo4j database on this computer.
+# Browser: http://localhost:7474
+# Bolt (what Python uses): bolt://localhost:7687
+# User: neo4j
+# Password: ticket123
+
+services:
+  neo4j:
+    image: neo4j:5
+    container_name: ticket-neo4j
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      NEO4J_AUTH: neo4j/ticket123
+      NEO4J_server_memory_heap_initial__size: 256m
+      NEO4J_server_memory_heap_max__size: 512m
+    volumes:
+      - ticket_neo4j_data:/data
+
+volumes:
+  ticket_neo4j_data:

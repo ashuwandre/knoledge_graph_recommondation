@@ -1,0 +1,20 @@
+[
+  {
+    "id": "N1",
+    "text": "I cannot login and the reset email never comes to my inbox.",
+    "expected_category": "Authentication",
+    "expected_cause": "SMTP credentials expired"
+  },
+  {
+    "id": "N2",
+    "text": "The customer was charged two times for one shirt order.",
+    "expected_category": "Payment",
+    "expected_cause": "Missing idempotency key"
+  },
+  {
+    "id": "N3",
+    "text": "Search page times out and feels very slow.",
+    "expected_category": "Performance",
+    "expected_cause": "Full table scan on search"
+  }
+]
