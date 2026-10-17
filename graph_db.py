@@ -22,11 +22,14 @@ The last arrow is copied from past tickets. If ticket T3 mentions
 email_not_sent and its cause is SMTP credentials expired, we remember
 that this symptom can point at that cause.
 
-Input of the write functions: the dataset dict from graph_data.json
+Input of the write functions: tickets (id + text) and the nodes/edges
+extracted for each ticket.
 Output of the read functions: list of dicts, one dict per result row
 """
 
 from neo4j import GraphDatabase
+
+from extract import extract_ticket
 
 
 # Past tickets that share symptom nodes with the new ticket.
@@ -109,119 +112,183 @@ def run(driver, cypher, params=None):
         return [row.data() for row in result]
 
 
-def build_graph(driver, data):
+def existing_ticket_ids(driver):
     """
-    Wipe the database and create the whole graph from the dataset.
+    Read the ticket ids already stored in Neo4j.
 
-    Why wipe:
-        This is a learning sandbox. Re-running build should show the same
-        graph, not a second copy of every node. MERGE also protects us,
-        and the wipe makes deleted dataset rows disappear too.
+    Input: open driver
+    Output: list of id strings, for example ["T1", "T2"]
+    An empty graph returns an empty list.
+    """
+    rows = run(driver, "MATCH (t:Ticket) RETURN t.id AS id")
+    ids = []
+    for row in rows:
+        ids.append(row["id"])
+    return ids
+
+
+def build_graph(driver, tickets, supporting, settings, incremental=False):
+    """
+    Write one extracted graph per ticket.
+
+    incremental=False is a full build. The database is cleared first,
+    then every ticket is extracted and saved.
+
+    incremental=True keeps the current graph. A ticket id that is already
+    stored is skipped. A new id is extracted and merged in. MERGE reuses
+    a shared symptom or cause instead of making a second copy.
 
     Input:
         driver: open connection
-        data: the dict loaded from data/graph_data.json
+        tickets: list of {"id", "text"} from data/tickets.json
+        supporting: allowed labels, symptom keywords, and hint patterns
+        settings: used to decide llm extraction or hint extraction
+        incremental: False wipes the graph, True adds only new ticket ids
 
     Output:
         Nothing returned. Nodes and arrows now live inside Neo4j.
-        Progress lines are printed so you can see each ticket being linked.
-
-    MERGE means "make this node if it is missing, otherwise reuse it".
-    The property inside the braces is the identity. Same name = same node.
-    A symptom used by three tickets is still one Symptom node.
     """
-    # Block: start from an empty database.
-    run(driver, "MATCH (n) DETACH DELETE n")
-    print("cleared the database")
+    # Block: full build starts empty. An add build does not delete anything.
+    if not incremental:
+        run(driver, "MATCH (n) DETACH DELETE n")
+        print("cleared the database")
 
-    # Block: create the plain lookup nodes. No arrows yet.
-    for category in data["categories"]:
-        run(driver, "MERGE (:Category {name: $name})", {"name": category["name"]})
-    for name in data["components"]:
-        run(driver, "MERGE (:Component {name: $name})", {"name": name})
-    for symptom in data["symptoms"]:
-        run(driver, "MERGE (:Symptom {name: $name})", {"name": symptom["name"]})
-    for solution in data["solutions"]:
-        run(
-            driver,
-            "MERGE (s:Solution {name: $name}) SET s.steps = $steps",
-            {"name": solution["name"], "steps": solution["steps"]},
-        )
+    # Block: ids already in Neo4j. Only used when we are adding.
+    already_there = []
+    if incremental:
+        already_there = existing_ticket_ids(driver)
+        print("already in graph:", already_there)
+
+    allowed_labels = set(supporting["node_labels"])
+    allowed_edges = set(supporting["edge_types"])
+
+    for ticket in tickets:
+        # A known id is left as it is. Editing an old ticket still needs a full build.
+        if ticket["id"] in already_there:
+            print("skip", ticket["id"])
+            continue
+
+        print("")
+        print("EXTRACT", ticket["id"])
+        print("INPUT text:", ticket["text"])
+        extracted = extract_ticket(settings, ticket, supporting)
+        print("MODE:", extracted["mode"])
+        save_ticket(driver, ticket)
+        for node in extracted["nodes"]:
+            save_node(driver, node, allowed_labels)
+        for one_edge in extracted["edges"]:
+            save_edge(driver, one_edge, allowed_labels, allowed_edges)
+
+    print("")
+    print("graph build finished")
+
+
+def save_ticket(driver, ticket):
+    """
+    Write the Ticket node from the input file.
+
+    The extractor does not have to return this node. The id and the text
+    are already known before extraction.
+
+    Input: driver and one ticket dict
+    Output: nothing returned. One Ticket node is stored.
+    """
+    run(
+        driver,
+        "MERGE (t:Ticket {id: $id}) SET t.text = $text",
+        {"id": ticket["id"], "text": ticket["text"]},
+    )
+    print(f"  node Ticket({ticket['id']})")
+
+
+def save_node(driver, node, allowed_labels):
+    """
+    MERGE one extracted node.
+
+    Input:
+        node: {"label", "name", optional "detail", optional "steps"}
+        allowed_labels: the label set from supporting.json
+
+    Output: nothing returned.
+    Ticket nodes are skipped because save_ticket already wrote them.
+    A label that is not in supporting.json is skipped.
+    """
+    label = node["label"]
+    if label == "Ticket" or label not in allowed_labels:
+        return
+
+    params = {"name": node["name"]}
+    sets = ["n.name = $name"]
+    if node.get("detail"):
+        params["detail"] = node["detail"]
+        sets.append("n.detail = $detail")
+    if node.get("steps"):
+        params["steps"] = node["steps"]
+        sets.append("n.steps = $steps")
+
+    # The label is pasted into the query only after the allowed-label check.
+    # Cypher cannot take a label as a $parameter.
+    query = f"MERGE (n:{label} {{name: $name}}) SET " + ", ".join(sets)
+    run(driver, query, params)
+    print(f"  node {label}({node['name']})")
+
+
+def save_edge(driver, one_edge, allowed_labels, allowed_edges):
+    """
+    MERGE one extracted arrow between two nodes that were already saved.
+
+    Input:
+        one_edge: from_label, from_name, type, to_label, to_name
+        allowed_labels and allowed_edges from supporting.json
+
+    Output: nothing returned.
+    Ticket ends are matched on id. Every other node is matched on name.
+    """
+    from_label = one_edge["from_label"]
+    to_label = one_edge["to_label"]
+    rel_type = one_edge["type"]
+    if from_label not in allowed_labels or to_label not in allowed_labels:
+        return
+    if rel_type not in allowed_edges:
+        return
+
+    from_prop = "id" if from_label == "Ticket" else "name"
+    to_prop = "id" if to_label == "Ticket" else "name"
+    query = f"""
+    MATCH (a:{from_label} {{{from_prop}: $from_name}})
+    MATCH (b:{to_label} {{{to_prop}: $to_name}})
+    MERGE (a)-[:{rel_type}]->(b)
+    """
+    run(
+        driver,
+        query,
+        {"from_name": one_edge["from_name"], "to_name": one_edge["to_name"]},
+    )
     print(
-        "lookup nodes:",
-        len(data["categories"]), "categories,",
-        len(data["components"]), "components,",
-        len(data["symptoms"]), "symptoms,",
-        len(data["solutions"]), "solutions",
+        f"  edge {from_label}({one_edge['from_name']}) "
+        f"-[{rel_type}]-> {to_label}({one_edge['to_name']})"
     )
 
-    # Block: create each cause and attach the component and the solution.
-    # The cause name is the identity. detail/component/solution are facts.
-    for cause in data["root_causes"]:
-        run(
-            driver,
-            """
-            MERGE (rc:RootCause {name: $name})
-            SET rc.detail = $detail
-            WITH rc
-            MATCH (comp:Component {name: $component})
-            MATCH (sol:Solution {name: $solution})
-            MERGE (rc)-[:LIVES_IN]->(comp)
-            MERGE (rc)-[:SOLVED_BY]->(sol)
-            """,
-            {
-                "name": cause["name"],
-                "detail": cause["detail"],
-                "component": cause["component"],
-                "solution": cause["solution"],
-            },
-        )
-    print("root causes:", len(data["root_causes"]))
 
-    # Block: create each past ticket and its arrows.
-    # POINTS_TO is derived here from history: a symptom that showed up
-    # on a ticket can point at that ticket's cause.
-    for ticket in data["tickets"]:
-        run(
-            driver,
-            """
-            MERGE (t:Ticket {id: $id})
-            SET t.text = $text
-            WITH t
-            MATCH (cat:Category {name: $category})
-            MATCH (comp:Component {name: $component})
-            MATCH (rc:RootCause {name: $root_cause})
-            MERGE (t)-[:ABOUT]->(cat)
-            MERGE (t)-[:TOUCHES]->(comp)
-            MERGE (t)-[:HAS_CAUSE]->(rc)
-            """,
-            {
-                "id": ticket["id"],
-                "text": ticket["text"],
-                "category": ticket["category"],
-                "component": ticket["component"],
-                "root_cause": ticket["root_cause"],
-            },
-        )
-        for symptom_name in ticket["symptoms"]:
-            run(
-                driver,
-                """
-                MATCH (t:Ticket {id: $id})
-                MATCH (s:Symptom {name: $symptom})
-                MATCH (rc:RootCause {name: $root_cause})
-                MERGE (t)-[:MENTIONS]->(s)
-                MERGE (s)-[:POINTS_TO]->(rc)
-                """,
-                {
-                    "id": ticket["id"],
-                    "symptom": symptom_name,
-                    "root_cause": ticket["root_cause"],
-                },
-            )
-        print(f"  {ticket['id']} --HAS_CAUSE--> {ticket['root_cause']}")
+def training_rows(driver):
+    """
+    Read labeled ticket sentences back out of the graph.
 
-    print("graph build finished")
+    Why:
+        The ticket file has no category field. The category is an ABOUT
+        arrow created during extraction. Naive Bayes trains on these rows.
+
+    Input: open driver
+    Output: list of {"text", "category"}
+    """
+    return run(
+        driver,
+        """
+        MATCH (t:Ticket)-[:ABOUT]->(c:Category)
+        RETURN t.text AS text, c.name AS category
+        ORDER BY t.id
+        """,
+    )
 
 
 def _sort_symptom_lists(rows):

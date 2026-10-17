@@ -30,12 +30,13 @@ Other commands:
 
 ```powershell
 python main.py build
+python main.py add
 python main.py show
 python main.py analyze
 python main.py analyze "I cannot login and the reset email never comes"
 ```
 
-`build` loads the dataset into Neo4j. `show` prints the graph. `analyze` runs the 3 new tickets, or one sentence you type. `demo` does build, a short show, then analyze.
+`build` deletes the graph and loads every ticket again. `add` keeps the current graph and writes only ticket ids that are not already stored. `show` prints the graph. `analyze` runs the 3 new tickets, or one sentence you type. `demo` does build, a short show, then analyze.
 
 The graph steps work with no API key. The script then copies the closest past ticket. To let a model write the wording, copy `.env.example` to `.env` and set `OPENAI_API_KEY`. Any OpenAI-compatible server works. The Ollama example is in `.env.example`.
 
@@ -72,12 +73,14 @@ Classification comes first because the graph does not store raw sentences on the
 
 | File | Job |
 | --- | --- |
-| `data/graph_data.json` | The whole dataset: classes, symptoms, components, causes, solutions, 10 past tickets |
+| `data/tickets.json` | The only graph input: 10 closed tickets, each with an id and a text |
+| `data/supporting.json` | Allowed labels, symptom keywords, and hint patterns used while the graph is created |
+| `extract.py` | Reads one ticket and returns nodes and edges |
 | `data/new_tickets.json` | 3 unlabeled tickets to practice on, plus a study answer that the code does not use |
 | `docker-compose.yml` | Starts Neo4j |
 | `config.py` | Reads the database address and the optional model key |
 | `classify.py` | Step 1. Naive Bayes class probabilities, plus symptom names |
-| `graph_db.py` | Step 2. Builds the graph and runs the two Cypher searches |
+| `graph_db.py` | Writes the extracted nodes and edges into Neo4j, then searches them |
 | `llm_gen.py` | Step 3. Builds the prompt and writes the root cause and solution |
 | `main.py` | Connects the steps and prints every input and output |
 | `cypher/examples.cypher` | The same queries, ready to paste into Neo4j Browser |
@@ -88,9 +91,11 @@ Call order inside `python main.py demo`:
 
 ```
 main
-  train_category_model
   build_graph
+    extract_ticket     (LLM, or hint patterns when no API key)
+    save each node and edge
   show_graph
+  train_from_graph
   analyze_one          (once per new ticket)
     classify_ticket
     similar_tickets
@@ -149,14 +154,15 @@ A new ticket with both `login_failed` and `email_not_sent` shares 2 symptoms wit
 
 ## The dataset
 
-`data/graph_data.json` has six lists.
+`data/tickets.json` is the only ticket input. Each item has an `id` and a `text`. The text is a closed ticket: the complaint, what was found, and the fix. It does not contain a category field or a list of edges.
 
-- `categories` are the four classes stored as nodes. The classifier does not read their keyword lists. It learns the class from the past ticket sentences.
-- `symptoms` are the names that do get stored. `keywords` detect those names in a new sentence.
-- `components` are the systems that break (Auth Service, Email Service, and so on).
-- `solutions` are the fix nodes. `steps` is the sentence a human would follow.
-- `root_causes` each point at one component and one solution by exact name.
-- `tickets` are the past history. Each one has a class, a component, a cause, and one or more symptoms. The cause's solution is reached by walking the arrow, so the ticket does not store the fix itself.
+`data/supporting.json` is used while the graph is created:
+
+- `node_labels` and `edge_types` are the only kinds of nodes and arrows the builder will save.
+- `categories`, `components`, and `symptoms` are the allowed names. Symptom `keywords` also find those names in a new ticket during analysis.
+- `patterns` are used only when no API key is set. Each pattern is one known story. The story with the most matching symptom keywords is turned into nodes and edges.
+
+When `OPENAI_API_KEY` is set, those patterns are not sent to the model. The model reads the ticket text plus the allowed names and returns the nodes and edges itself.
 
 Names must be spelled the same in every list. `MERGE` treats a different spelling as a different node.
 
@@ -177,7 +183,7 @@ The 3 new tickets in `data/new_tickets.json` have `expected_category` and `expec
 
 ## How a build writes one ticket
 
-For T3 the Python driver sends Cypher like this:
+`extract_ticket` reads T3 and returns nodes and edges. With an API key, the language model writes that JSON. With no key, the hint pattern whose symptoms match the text is used instead. `build_graph` then sends Cypher like this:
 
 ```cypher
 MERGE (t:Ticket {id: "T3"})
@@ -195,7 +201,7 @@ MERGE (t)-[:MENTIONS]->(s)
 MERGE (s)-[:POINTS_TO]->(rc)
 ```
 
-`build` deletes every node first (`MATCH (n) DETACH DELETE n`), then creates the lookup nodes, then the causes, then the tickets. Re-running `build` gives the same graph.
+`build` deletes every node first (`MATCH (n) DETACH DELETE n`), then writes the extracted nodes and edges for each ticket. Re-running `build` gives the same graph when the tickets and the extractor stay the same.
 
 After a build the counts are:
 
@@ -213,7 +219,7 @@ After a build the counts are:
 
 | Step | Code | Input | Output |
 | --- | --- | --- | --- |
-| 0 | `build_graph` | `graph_data.json` | nodes and arrows in Neo4j |
+| 0 | `extract_ticket` then `build_graph` | one ticket text + `supporting.json` | nodes and arrows in Neo4j |
 | 1 | `classify_ticket` | new sentence + Naive Bayes model | one class, plus symptom names |
 | 2a | `similar_tickets` | symptom names | up to 3 past tickets, scored by shared symptoms |
 | 2b | `causes_for_symptoms` | symptom names | each symptom -> cause -> solution link |
@@ -380,8 +386,8 @@ The browser draws the nodes and the arrows. Query 5 in that file is the N1 simil
 
 ## Try a change
 
-1. Add a ticket to the `tickets` list in `data/graph_data.json`. Reuse a cause name that already exists, or add a new cause and a new solution with the same spelling.
-2. Add a keyword if your new sentence uses different words.
+1. Add a closed ticket to `data/tickets.json` with an `id` and a `text` that includes the complaint, the cause, and the fix.
+2. If you have no API key, add a matching story to `patterns` in `data/supporting.json`. With an API key, the model extracts the nodes and edges from the text.
 3. Run `python main.py build` so Neo4j is replaced with the new graph.
 4. Run `python main.py analyze "your new sentence"`.
 

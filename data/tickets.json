@@ -1,0 +1,42 @@
+[
+  {
+    "id": "T1",
+    "text": "User cannot login after password reset. The old password still works. The reset saved the new password in the database, but the auth service kept serving the old hash from cache. Fix: delete the cached password hash and ask the user to reset the password one more time."
+  },
+  {
+    "id": "T2",
+    "text": "User is logged out every minute. The page says session expired. The login token expires after one minute, so the user is thrown out immediately. Fix: set the session token lifetime to 30 minutes and restart the auth service."
+  },
+  {
+    "id": "T3",
+    "text": "Cannot login because the reset email never arrives. The email service can no longer log in to the mail server because the SMTP credentials expired, so reset emails sit in the queue. Fix: put the new mail password in the email service config and resend the queued reset emails."
+  },
+  {
+    "id": "T4",
+    "text": "Customer was charged twice for the same order. A retry of the same checkout created a second charge because the gateway had no idempotency key to detect the replay. Fix: refund the second charge and save an idempotency key so the same order cannot be charged again."
+  },
+  {
+    "id": "T5",
+    "text": "Checkout button does nothing and the page shows payment failed. The checkout page never loaded the card script, so the payment SDK failed to load. Fix: pin the payment script version and reload it on the checkout page."
+  },
+  {
+    "id": "T6",
+    "text": "Payment stuck on processing for an hour after the card was accepted. The bank took the money, but the webhook that marks the order paid never reached us. Fix: ask the bank for the payment status and mark the order paid when the bank says success."
+  },
+  {
+    "id": "T7",
+    "text": "Dashboard is slow and takes 30 seconds to open. CPU is high. The dashboard reads every order row for one user because a database index is missing. Fix: add an index on orders.user_id and cache the dashboard query for a few minutes."
+  },
+  {
+    "id": "T8",
+    "text": "Search times out. The results page is slow for every query. Search compares the typed name with every product row because there is no text index. This is a full table scan. Fix: add a full text index on product name and run the search against that index."
+  },
+  {
+    "id": "T9",
+    "text": "Mobile app shows old balance after payment. Sync did not update the screen. The payment updated the database, but the app kept the old cached balance because the cache was not invalidated. Fix: increase the cache version when a payment event arrives so the app reads the new balance."
+  },
+  {
+    "id": "T10",
+    "text": "Report export is missing yesterday rows. The nightly sync failed. The export job stopped when it hit a null date, so yesterday's rows were never written. Fix: skip rows with a null date, fix them, and rerun the nightly export."
+  }
+]

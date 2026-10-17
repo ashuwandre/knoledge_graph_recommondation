@@ -6,7 +6,8 @@ The class is chosen by a small machine-learning model:
     MultinomialNB (Naive Bayes) learns which words go with which class.
     The four classes are Authentication, Payment, Performance, and Data.
 
-Training data is the 10 past tickets in graph_data.json.
+Training rows are read back from Neo4j after the graph is built.
+Each row is a ticket sentence plus the Category connected by ABOUT.
 Each past ticket already has a human label in the "category" field.
 
 Symptom names still come from keyword matches. The graph stores nodes

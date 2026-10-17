@@ -1,0 +1,206 @@
+{
+  "node_labels": ["Ticket", "Category", "Component", "Symptom", "RootCause", "Solution"],
+  "edge_types": ["ABOUT", "MENTIONS", "TOUCHES", "HAS_CAUSE", "LIVES_IN", "SOLVED_BY", "POINTS_TO"],
+  "categories": [
+    {"name": "Authentication"},
+    {"name": "Payment"},
+    {"name": "Performance"},
+    {"name": "Data"}
+  ],
+  "components": [
+    "Auth Service",
+    "Email Service",
+    "Payment Gateway",
+    "Checkout UI",
+    "Dashboard API",
+    "Search API",
+    "Sync Service",
+    "ETL Job"
+  ],
+  "symptoms": [
+    {
+      "name": "login_failed",
+      "keywords": ["cannot login", "can't login", "unable to login", "login failed", "cannot sign in", "can not login"]
+    },
+    {
+      "name": "email_not_sent",
+      "keywords": ["email never", "reset email", "no email", "email not"]
+    },
+    {
+      "name": "session_expired",
+      "keywords": ["session expired", "logged out"]
+    },
+    {
+      "name": "password_reset",
+      "keywords": ["password reset", "after reset", "reset password"]
+    },
+    {
+      "name": "double_charge",
+      "keywords": ["charged twice", "double charge", "charged two", "two times"]
+    },
+    {
+      "name": "payment_failed",
+      "keywords": ["payment failed", "button does nothing", "checkout button"]
+    },
+    {
+      "name": "payment_pending",
+      "keywords": ["stuck on processing", "payment pending", "still processing"]
+    },
+    {
+      "name": "slow_page",
+      "keywords": ["slow", "takes 30", "30 seconds"]
+    },
+    {
+      "name": "timeout",
+      "keywords": ["timeout", "timed out", "times out"]
+    },
+    {
+      "name": "high_cpu",
+      "keywords": ["cpu"]
+    },
+    {
+      "name": "stale_data",
+      "keywords": ["old balance", "stale", "shows old", "out of date"]
+    },
+    {
+      "name": "sync_failed",
+      "keywords": ["sync"]
+    },
+    {
+      "name": "missing_rows",
+      "keywords": ["missing rows", "missing yesterday"]
+    }
+  ],
+  "patterns": [
+    {
+      "symptoms": ["login_failed", "password_reset"],
+      "category": "Authentication",
+      "component": "Auth Service",
+      "root_cause": {
+        "name": "Password hash not updated in cache",
+        "detail": "The reset saved the new password in the database, but the auth service kept serving the old hash from cache."
+      },
+      "solution": {
+        "name": "Clear auth cache",
+        "steps": "Delete the cached password hash for the user and ask them to reset the password one more time."
+      }
+    },
+    {
+      "symptoms": ["session_expired", "login_failed"],
+      "category": "Authentication",
+      "component": "Auth Service",
+      "root_cause": {
+        "name": "Session token TTL too short",
+        "detail": "The login token expires after one minute, so the user is thrown out immediately."
+      },
+      "solution": {
+        "name": "Increase session TTL",
+        "steps": "Set the session token lifetime to 30 minutes and restart the auth service."
+      }
+    },
+    {
+      "symptoms": ["login_failed", "email_not_sent"],
+      "category": "Authentication",
+      "component": "Email Service",
+      "root_cause": {
+        "name": "SMTP credentials expired",
+        "detail": "The email service can no longer log in to the mail server, so reset emails sit in the queue."
+      },
+      "solution": {
+        "name": "Rotate SMTP password",
+        "steps": "Put the new mail password in the email service config and resend the queued reset emails."
+      }
+    },
+    {
+      "symptoms": ["double_charge"],
+      "category": "Payment",
+      "component": "Payment Gateway",
+      "root_cause": {
+        "name": "Missing idempotency key",
+        "detail": "A retry of the same checkout created a second charge because the gateway had nothing to detect the replay."
+      },
+      "solution": {
+        "name": "Refund duplicate charge",
+        "steps": "Refund the second charge and save an idempotency key so the same order cannot be charged again."
+      }
+    },
+    {
+      "symptoms": ["payment_failed"],
+      "category": "Payment",
+      "component": "Checkout UI",
+      "root_cause": {
+        "name": "Payment SDK failed to load",
+        "detail": "The checkout page never loaded the card script, so the pay button does nothing."
+      },
+      "solution": {
+        "name": "Reload payment SDK",
+        "steps": "Pin the payment script version and reload it on the checkout page."
+      }
+    },
+    {
+      "symptoms": ["payment_pending"],
+      "category": "Payment",
+      "component": "Payment Gateway",
+      "root_cause": {
+        "name": "Bank webhook missing",
+        "detail": "The bank took the money, but the webhook that marks the order paid never reached us."
+      },
+      "solution": {
+        "name": "Poll bank status",
+        "steps": "Ask the bank for the payment status and mark the order paid when the bank says success."
+      }
+    },
+    {
+      "symptoms": ["slow_page", "high_cpu"],
+      "category": "Performance",
+      "component": "Dashboard API",
+      "root_cause": {
+        "name": "Missing database index",
+        "detail": "The dashboard reads every order row for one user, which makes the page slow and the CPU high."
+      },
+      "solution": {
+        "name": "Add orders index",
+        "steps": "Add an index on orders.user_id and cache the dashboard query for a few minutes."
+      }
+    },
+    {
+      "symptoms": ["timeout", "slow_page"],
+      "category": "Performance",
+      "component": "Search API",
+      "root_cause": {
+        "name": "Full table scan on search",
+        "detail": "Search compares the typed name with every product row because there is no text index."
+      },
+      "solution": {
+        "name": "Add search index",
+        "steps": "Add a full text index on product name and run the search against that index."
+      }
+    },
+    {
+      "symptoms": ["stale_data", "sync_failed"],
+      "category": "Data",
+      "component": "Sync Service",
+      "root_cause": {
+        "name": "Cache not invalidated",
+        "detail": "The payment updated the database, but the mobile app kept showing the old cached balance."
+      },
+      "solution": {
+        "name": "Bump cache version",
+        "steps": "Increase the cache version when a payment event arrives so the app reads the new balance."
+      }
+    },
+    {
+      "symptoms": ["missing_rows", "sync_failed"],
+      "category": "Data",
+      "component": "ETL Job",
+      "root_cause": {
+        "name": "Nightly ETL job failed",
+        "detail": "The export job stopped when it hit a null date, so yesterday's rows were never written."
+      },
+      "solution": {
+        "name": "Rerun ETL job",
+        "steps": "Skip rows with a null date, fix them, and rerun the nightly export."
+      }
+    }
+  ]
+}

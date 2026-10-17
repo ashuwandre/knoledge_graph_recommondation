@@ -11,6 +11,7 @@ What this script does, in order:
 
 Commands:
     python main.py build
+    python main.py add
     python main.py show
     python main.py analyze
     python main.py analyze "customer was charged two times"
@@ -23,7 +24,7 @@ import json
 import sys
 
 from classify import classify_ticket, train_category_model
-from config import DATA_FILE, NEW_FILE, get_settings
+from config import NEW_FILE, SUPPORT_FILE, TICKETS_FILE, get_settings
 from graph_db import (
     CAUSE_QUERY,
     SIMILAR_QUERY,
@@ -32,6 +33,7 @@ from graph_db import (
     get_driver,
     show_graph,
     similar_tickets,
+    training_rows,
 )
 from llm_gen import generate
 
@@ -39,6 +41,7 @@ from llm_gen import generate
 HELP = """
 Commands:
   python main.py build
+  python main.py add
   python main.py show
   python main.py analyze
   python main.py analyze "your ticket text here"
@@ -73,17 +76,17 @@ def print_step(title):
     print("-" * 60)
 
 
-def analyze_one(driver, data, ticket, settings, model):
+def analyze_one(driver, supporting, ticket, settings, model):
     """
     Run the three steps for a single new ticket and print every input
     and output.
 
     Input:
         driver: open Neo4j connection
-        data: full dataset (keyword lists live here)
+        supporting: symptom keywords and the allowed graph vocabulary
         ticket: dict with at least id and text
         settings: connection and model settings
-        model: category model already trained on the past tickets
+        model: category model already trained on rows read from the graph
 
     Output:
         Nothing returned. The analysis is printed.
@@ -100,7 +103,7 @@ def analyze_one(driver, data, ticket, settings, model):
     # ----- Step 1. Multiclass classification with Naive Bayes. -----
     print_step("STEP 1  classify the ticket (multiclass ML)")
     print("INPUT: ticket text + Naive Bayes model trained on the past tickets")
-    classification = classify_ticket(text, model, data["symptoms"])
+    classification = classify_ticket(text, model, supporting["symptoms"])
     print("OUTPUT category probabilities:")
     for row in classification["category_scores"]:
         print(f"  {row['name']} {row['score']:.2f}")
@@ -164,12 +167,28 @@ def analyze_one(driver, data, ticket, settings, model):
         print("  expected cause:", ticket["expected_cause"])
 
 
+def train_from_graph(driver):
+    """
+    Fit Naive Bayes on the categories stored in the graph.
+
+    Input: open driver, after build has created ABOUT arrows
+    Output: a fitted model
+    The ticket file has no category field. The class is the Category
+    node each ticket points at.
+    """
+    rows = training_rows(driver)
+    print("trained Naive Bayes on", len(rows), "graph tickets")
+    model = train_category_model(rows)
+    print("classes:", ", ".join(model.classes_))
+    return model
+
+
 def main():
     """
     Read the command and run build, show, analyze, or demo.
 
     Input: sys.argv
-    Output: nothing returned. Database changes only happen on build and demo.
+    Output: nothing returned. Database changes happen on build, add, and demo.
     """
     if len(sys.argv) < 2:
         print(HELP)
@@ -183,34 +202,32 @@ def main():
     driver.verify_connectivity()
     print("connected to", settings["neo4j_uri"])
 
-    data = load_json(DATA_FILE)
-
-    # The category model reads the past tickets only. Build and show do not need it.
-    model = None
-    if command in ("analyze", "demo"):
-        model = train_category_model(data["tickets"])
-        print("trained Naive Bayes on", len(data["tickets"]), "past tickets")
-        print("classes:", ", ".join(model.classes_))
+    tickets = load_json(TICKETS_FILE)
+    supporting = load_json(SUPPORT_FILE)
 
     if command == "build":
-        build_graph(driver, data)
+        build_graph(driver, tickets, supporting, settings)
+    elif command == "add":
+        build_graph(driver, tickets, supporting, settings, incremental=True)
     elif command == "show":
         show_graph(driver, full=True)
     elif command == "analyze":
+        model = train_from_graph(driver)
         if len(sys.argv) > 2:
             custom = {
                 "id": "CUSTOM",
                 "text": " ".join(sys.argv[2:]),
             }
-            analyze_one(driver, data, custom, settings, model)
+            analyze_one(driver, supporting, custom, settings, model)
         else:
             for ticket in load_json(NEW_FILE):
-                analyze_one(driver, data, ticket, settings, model)
+                analyze_one(driver, supporting, ticket, settings, model)
     elif command == "demo":
-        build_graph(driver, data)
+        build_graph(driver, tickets, supporting, settings)
         show_graph(driver, full=False)
+        model = train_from_graph(driver)
         for ticket in load_json(NEW_FILE):
-            analyze_one(driver, data, ticket, settings, model)
+            analyze_one(driver, supporting, ticket, settings, model)
     else:
         print(HELP)
 

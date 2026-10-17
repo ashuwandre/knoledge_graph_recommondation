@@ -15,7 +15,8 @@ from pathlib import Path
 # Folder that contains this file. All data paths hang off this folder
 # so the script works no matter which directory you launch it from.
 ROOT = Path(__file__).resolve().parent
-DATA_FILE = ROOT / "data" / "graph_data.json"
+TICKETS_FILE = ROOT / "data" / "tickets.json"
+SUPPORT_FILE = ROOT / "data" / "supporting.json"
 NEW_FILE = ROOT / "data" / "new_tickets.json"
 
 
